@@ -1,6 +1,8 @@
-# Setup Guide
+# 安装指南
 
-This guide walks through installing yt-dub-studio, launching the web app, running the CLI pipeline, preparing Wav2Lip, and troubleshooting common setup issues.
+这份文档介绍如何安装 yt-dub-studio、启动 Web App、运行 CLI pipeline、准备 Wav2Lip，以及排查常见问题。
+
+语言：中文 | [English](setup.en.md)
 
 ## 1. Clone
 
@@ -9,31 +11,31 @@ git clone https://github.com/nateEc/yt-dub-studio.git
 cd yt-dub-studio
 ```
 
-Use a path without spaces or special characters. The bundled Miniconda setup is sensitive to paths like `~/My Projects/yt-dub-studio`.
+建议把项目放在没有空格和特殊字符的路径下。项目内置的 Miniconda 安装流程对路径比较敏感，例如 `~/My Projects/yt-dub-studio` 这类路径可能导致安装失败。
 
-Recommended:
+推荐路径：
 
 ```text
 ~/dev/yt-dub-studio
 ```
 
-## 2. System Requirements
+## 2. 系统要求
 
-Recommended environment:
+推荐环境：
 
-- macOS or Linux.
-- `git` and `ffmpeg`.
-- Python environment managed by the project under `installer_files/env`.
-- 16GB+ RAM.
-- NVIDIA GPU recommended for faster inference; CPU works but is much slower.
+- macOS 或 Linux。
+- 已安装或可自动安装 `git` 和 `ffmpeg`。
+- Python 环境由项目脚本安装到 `installer_files/env`。
+- 16GB 以上内存。
+- NVIDIA GPU 会明显加速；CPU 也能跑，但速度会慢很多。
 
-Expected first-run downloads:
+首次运行可能会下载：
 
-- CosyVoice runtime/model assets.
-- Demucs model files.
-- Wav2Lip runtime and checkpoint if lip sync is enabled.
+- CosyVoice runtime/model 资源。
+- Demucs 模型文件。
+- 如果启用唇形同步，还会下载 Wav2Lip runtime 和 checkpoint。
 
-These local folders are intentionally ignored by git:
+这些本地目录已被 git 忽略：
 
 ```text
 installer_files/
@@ -41,110 +43,110 @@ model/
 workspace/
 ```
 
-## 3. Install System Dependencies
+## 3. 安装系统依赖
 
-macOS/Linux:
+macOS/Linux：
 
 ```bash
 ./configure.sh
 ```
 
-What it does:
+这个脚本会做什么：
 
-- macOS: checks Homebrew and installs `git`/`ffmpeg` when needed.
-- Linux: uses the detected package manager to install `git`, `ffmpeg`, and build tools.
+- macOS：检查 Homebrew，并在需要时安装 `git`/`ffmpeg`。
+- Linux：使用当前发行版的包管理器安装 `git`、`ffmpeg` 和构建工具。
 
-If you prefer manual installation, make sure these commands work:
+如果你想手动安装，确保这些命令可用：
 
 ```bash
 git --version
 ffmpeg -version
 ```
 
-## 4. Create The Python Environment
+## 4. 创建 Python 环境
 
-CPU environment:
+CPU 环境：
 
 ```bash
 GPU_CHOICE=C ./start.sh --install-only
 ```
 
-NVIDIA GPU environment:
+NVIDIA GPU 环境：
 
 ```bash
 GPU_CHOICE=G ./start.sh --install-only
 ```
 
-After installation, use this Python for all commands:
+安装完成后，后续命令都建议使用这个 Python：
 
 ```bash
 installer_files/env/bin/python
 ```
 
-Check it:
+检查环境：
 
 ```bash
 installer_files/env/bin/python --version
 ```
 
-## 5. Install Matcha-TTS For CosyVoice
+## 5. 安装 Matcha-TTS
 
-CosyVoice depends on the local Matcha-TTS package:
+CosyVoice 依赖项目里的本地 Matcha-TTS 包：
 
 ```bash
 installer_files/env/bin/python -m pip install -e third_party/Matcha-TTS --no-deps
 ```
 
-## 6. Prepare Wav2Lip
+## 6. 准备 Wav2Lip
 
-Run this once if you want lip sync:
+如果你需要唇形同步，先运行一次：
 
 ```bash
 installer_files/env/bin/python scripts/setup-wav2lip-runtime.py
 ```
 
-The script will:
+这个脚本会：
 
-- clone Wav2Lip into `workspace/runtimes/Wav2Lip`
-- download the checkpoint to `model/wav2lip/checkpoints/wav2lip_gan.pth`
-- patch Wav2Lip for the current Python/Torch/librosa stack
-- preserve frames without detected faces instead of failing the whole video
-- support sampled face detection for faster CPU/macOS smoke tests
+- clone Wav2Lip 到 `workspace/runtimes/Wav2Lip`
+- 下载 checkpoint 到 `model/wav2lip/checkpoints/wav2lip_gan.pth`
+- 为当前 Python/Torch/librosa 环境打兼容补丁
+- 对检测不到人脸的帧保留原画面，而不是让整条视频失败
+- 支持采样做人脸检测，方便 CPU/macOS 上快速 smoke test
 
-If you only want to test dubbing first, skip this step and disable lip sync in the UI.
+如果你只想先验证配音链路，可以跳过这一步，并在 UI 里关闭唇形同步。
 
-## 7. Launch The Web App
+## 7. 启动 Web App
 
-Dedicated YouTube Pipeline UI:
+启动专用 YouTube Pipeline 页面：
 
 ```bash
 installer_files/env/bin/python start-youtube-pipeline.py
 ```
 
-Open:
+打开：
 
 ```text
 http://127.0.0.1:7861
 ```
 
-Recommended defaults for English YouTube to Chinese dubbing:
+英文 YouTube 到中文配音的推荐默认值：
 
-- Source language: `English`
-- Target language: `Chinese (simplified)`
-- ASR: `faster-whisper`
-- TTS strategy: `CosyVoice` source voice
-- Lip sync engine: `Wav2Lip`
-- Video quality: `low`
+- 源语言：`English`
+- 目标语言：`Chinese (simplified)`
+- ASR：`faster-whisper`
+- TTS 策略：`CosyVoice` 源音色
+- 唇形引擎：`Wav2Lip`
+- 视频质量：`low`
 
-You can also start the full Voice-Pro app, which includes a `YouTube Pipeline` tab:
+也可以启动完整 Voice-Pro 应用，其中包含 `YouTube Pipeline` tab：
 
 ```bash
 installer_files/env/bin/python start-abus.py
 ```
 
-## 8. Run From CLI
+## 8. 使用 CLI
 
-Full pipeline:
+完整 pipeline：
 
 ```bash
 installer_files/env/bin/python run-youtube-pipeline.py "https://www.youtube.com/watch?v=VIDEO_ID" \
@@ -156,7 +158,7 @@ installer_files/env/bin/python run-youtube-pipeline.py "https://www.youtube.com/
   --lip-sync-engine Wav2Lip
 ```
 
-Short smoke test:
+短片段 smoke test：
 
 ```bash
 installer_files/env/bin/python run-youtube-pipeline.py "https://www.youtube.com/watch?v=VIDEO_ID" \
@@ -170,7 +172,7 @@ installer_files/env/bin/python run-youtube-pipeline.py "https://www.youtube.com/
   --lip-sync-engine Wav2Lip
 ```
 
-Preflight only:
+只做 preflight 检查，不处理视频：
 
 ```bash
 installer_files/env/bin/python run-youtube-pipeline.py "https://www.youtube.com/watch?v=VIDEO_ID" \
@@ -179,7 +181,7 @@ installer_files/env/bin/python run-youtube-pipeline.py "https://www.youtube.com/
   --lip-sync-engine Wav2Lip
 ```
 
-Strict lip-sync mode:
+严格唇形同步模式：
 
 ```bash
 installer_files/env/bin/python run-youtube-pipeline.py "https://www.youtube.com/watch?v=VIDEO_ID" \
@@ -188,68 +190,68 @@ installer_files/env/bin/python run-youtube-pipeline.py "https://www.youtube.com/
   --no-audio-only-fallback
 ```
 
-In strict mode, the pipeline fails if real lip sync cannot be produced. Without strict mode, it may return an audio-replaced fallback video.
+严格模式下，如果真实唇形同步失败，pipeline 会直接失败；非严格模式下，可能返回仅换音轨的视频 fallback。
 
-## 9. Source-Voice Dubbing
+## 9. 源音色配音
 
-The default TTS strategy is:
+默认 TTS 策略是：
 
 ```bash
 --tts-strategy source_voice
 ```
 
-This means the pipeline will:
+这意味着 pipeline 会：
 
-1. separate vocals from the source video
-2. extract a reference clip from the original speaker
-3. synthesize Chinese speech with CosyVoice Cross-Lingual mode
-4. fit each translated segment back into its source subtitle time slot
+1. 从源视频分离人声
+2. 提取原说话人参考音频
+3. 使用 CosyVoice Cross-Lingual 模式生成中文语音
+4. 将每段中文配音贴回原字幕时间槽，减少音画漂移
 
-By default, source-voice failure is loud. The pipeline does not silently switch to a generic TTS voice.
+默认情况下，源音色生成失败会明确报错，不会静默切到普通 TTS。
 
-If you explicitly want generic Edge/Azure fallback:
+如果你明确想允许 Edge/Azure 普通 TTS fallback：
 
 ```bash
 --allow-edge-tts-fallback
 ```
 
-If you want to use generic Edge/Azure TTS directly:
+如果想直接使用普通 Edge/Azure TTS：
 
 ```bash
 --tts-strategy edge
 ```
 
-## 10. Outputs
+## 10. 输出目录
 
-Generated files are stored under:
+生成文件保存在：
 
 ```text
 workspace/
 ```
 
-Typical outputs:
+常见输出包括：
 
-- downloaded source video
-- extracted audio
-- separated vocal/instrumental tracks
-- source subtitles
-- Chinese subtitles
-- source-voice Chinese dub audio
-- audio-replaced video
-- Wav2Lip lip-synced video
-- final video surfaced in the Gradio UI
+- 下载后的源视频
+- 抽取音频
+- 分离后的人声/伴奏
+- 英文字幕
+- 中文字幕
+- 源音色中文配音音频
+- 换音轨视频
+- Wav2Lip 口型同步视频
+- Gradio 页面展示的最终成片
 
-## 11. Optional Azure Configuration
+## 11. 可选 Azure 配置
 
-The default pipeline does not require OpenAI tokens.
+默认 pipeline 不需要 OpenAI token。
 
-If you want Azure Translator or Azure TTS:
+如果你想使用 Azure Translator 或 Azure TTS：
 
 ```bash
 cp .env.example .env
 ```
 
-Then fill in:
+然后填写：
 
 ```text
 AZURE_SPEECH_KEY=
@@ -259,11 +261,11 @@ AZURE_TRANSLATOR_ENDPOINT=
 AZURE_TRANSLATOR_REGION=
 ```
 
-`.env` is ignored by git. Do not commit it.
+`.env` 已被 git 忽略，不要提交。
 
-## 12. Run Tests
+## 12. 运行测试
 
-Pipeline tests:
+Pipeline tests：
 
 ```bash
 installer_files/env/bin/python -m unittest \
@@ -272,7 +274,7 @@ installer_files/env/bin/python -m unittest \
   tests.test_pipeline_cli
 ```
 
-Compile check:
+编译检查：
 
 ```bash
 installer_files/env/bin/python -m compileall -q \
@@ -282,53 +284,54 @@ installer_files/env/bin/python -m compileall -q \
 
 ## FAQ
 
-### First run is slow
+### 首次运行很慢
 
-Expected. The first run may download models and warm up local caches. Source-voice dubbing plus lip sync is computationally heavy.
+正常。第一次运行可能要下载模型并初始化缓存。源音色配音加唇形同步本身也比较吃计算资源。
 
-### Five minutes of video takes close to an hour
+### 5 分钟视频接近 1 小时
 
-That is realistic on CPU/macOS. GPU acceleration, shorter clips, smaller ASR models, and disabling lip sync can reduce runtime.
+在 CPU/macOS 上这是现实情况。使用 GPU、缩短 clip、降低 ASR 模型、关闭唇形同步都能减少耗时。
 
-### Wav2Lip does not change the mouth
+### Wav2Lip 没有改变嘴形
 
-Check:
+检查：
 
-- `scripts/setup-wav2lip-runtime.py` completed successfully.
-- The source video has a visible face.
-- Lip sync is enabled in the UI or CLI.
-- Strict mode is enabled if you want failure instead of fallback:
+- `scripts/setup-wav2lip-runtime.py` 是否成功执行。
+- 源视频里是否有人脸且画面清楚。
+- UI 或 CLI 是否启用了唇形同步。
+- 如果你想失败时直接报错而不是 fallback，使用：
 
 ```bash
 --no-audio-only-fallback
 ```
 
-### YouTube download fails
+### YouTube 下载失败
 
-Update yt-dlp:
+更新 yt-dlp：
 
 ```bash
 installer_files/env/bin/python -m pip install -U yt-dlp
 ```
 
-Some videos require login, region access, or cookies. This project does not currently include cookies management.
+有些视频需要登录、地区权限或 cookies。当前项目还没有内置 cookies 管理。
 
-### macOS shows torchvision/libjpeg warnings
+### macOS 出现 torchvision/libjpeg warning
 
-Usually safe to ignore for this workflow. The warning comes from torchvision's optional image extension and does not block the Gradio UI or the video/audio pipeline.
+通常可以忽略。这个 warning 来自 torchvision 的可选 image extension，不会阻塞 Gradio UI 或当前音视频 pipeline。
 
-### The installer fails because of the project path
+### 安装因为路径失败
 
-Move the repository to a simpler path:
+把仓库移到更简单的路径：
 
 ```text
 ~/dev/yt-dub-studio
 ```
 
-Then re-run the setup commands.
+然后重新执行安装命令。
 
-## More Docs
+## 更多文档
 
 - [README](../README.md)
-- [YouTube Pipeline App](youtube-pipeline-app.md)
-- [Lip Sync Pipeline](lipsync-pipeline.md)
+- [English README](README.en.md)
+- [YouTube Pipeline 应用说明](youtube-pipeline-app.md)
+- [唇形同步说明](lipsync-pipeline.md)
