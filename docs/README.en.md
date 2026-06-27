@@ -14,6 +14,14 @@ Language: [中文](../README.md) | English
 ![Wav2Lip](https://img.shields.io/badge/Lip%20Sync-Wav2Lip-6366F1)
 ![License](https://img.shields.io/badge/License-GPLv3-blue)
 
+## Five-Minute Demo
+
+This sample shows the full workflow in action: the first five minutes of an English YouTube video → Chinese source-voice dubbing → Wav2Lip lip sync → final rendered video.
+
+<video src="https://raw.githubusercontent.com/nateEc/yt-dub-studio/main/docs/demo/wtf-loop-engineer-first5-sourcevoice-wav2lip.mp4" controls poster="https://raw.githubusercontent.com/nateEc/yt-dub-studio/main/docs/demo/wtf-loop-engineer-first5-sourcevoice-wav2lip.jpg" width="100%"></video>
+
+If the player does not render, open the file directly: [5-minute MP4 demo](demo/wtf-loop-engineer-first5-sourcevoice-wav2lip.mp4).
+
 ## Why This Exists
 
 Most video localization tools stop at subtitles or generic TTS. yt-dub-studio is built around a more ambitious workflow:
