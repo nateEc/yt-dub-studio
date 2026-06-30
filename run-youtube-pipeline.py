@@ -55,6 +55,32 @@ def _print_missing_dependency(e: ModuleNotFoundError):
     )
 
 
+def _make_cli_progress_callback(stream=None):
+    stream = stream or sys.stderr
+
+    def _callback(event):
+        stage = event.get("stage", {})
+        print(
+            json.dumps(
+                {
+                    "event": event.get("event"),
+                    "stage": stage,
+                },
+                ensure_ascii=False,
+            ),
+            file=stream,
+            flush=True,
+        )
+
+    return _callback
+
+
+def _result_to_dict(result):
+    if hasattr(result, "to_dict"):
+        return result.to_dict()
+    return result.__dict__
+
+
 def _build_params(args, user_config):
     from app.abus_pipeline import YoutubePipelineParams
 
@@ -187,12 +213,12 @@ def main(argv=None):
     pipeline = GradioGulliver(user_config)
 
     try:
-        result = pipeline.run_youtube_pipeline(params)
+        result = pipeline.run_youtube_pipeline(params, progress_callback=_make_cli_progress_callback())
     except Exception as e:
         print(json.dumps({"ok": False, "error": str(e)}, indent=2, ensure_ascii=False), file=sys.stderr)
         return 1
 
-    print(json.dumps(result.__dict__, indent=2, ensure_ascii=False))
+    print(json.dumps(_result_to_dict(result), indent=2, ensure_ascii=False))
     return 0 if result.ok else 1
 
 

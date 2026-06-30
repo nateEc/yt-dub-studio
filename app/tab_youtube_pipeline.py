@@ -9,7 +9,7 @@ sys.path.append(parent_dir)
 import gradio as gr
 
 from app.abus_ffmpeg import ffmpeg_get_duration
-from app.abus_pipeline import YoutubePipelineParams
+from app.abus_pipeline import PIPELINE_STAGE_KEYS, YoutubePipelineParams
 from app.abus_pipeline_estimate import estimate_youtube_pipeline
 from app.gradio_gulliver import GradioGulliver
 from src.config import UserConfig
@@ -417,6 +417,8 @@ def youtube_pipeline_tab(user_config: UserConfig):
                 with gr.Tabs():
                     with gr.Tab("运行状态"):
                         status = gr.Textbox(label="运行日志", lines=9, max_lines=18, interactive=False, elem_classes=["yp-status"])
+                    with gr.Tab("质量报告"):
+                        quality_report = gr.Markdown("运行完成后会显示质量报告。")
                     with gr.Tab("源视频"):
                         input_video = gr.Video(label="源视频", interactive=False)
                         input_audio = gr.Audio(label="源音频", type="filepath", interactive=False)
@@ -463,6 +465,7 @@ def youtube_pipeline_tab(user_config: UserConfig):
             translation,
             files,
             status,
+            quality_report,
             estimate_markdown,
         ],
     )
@@ -499,6 +502,7 @@ def _gradio_run_pipeline(
     lip_sync_engine,
     lip_sync_allow_fallback,
     bootstrap_assets,
+    progress=gr.Progress(track_tqdm=False),
 ):
     started_at = time.monotonic()
     gulliver = GradioGulliver(UserConfig(os.path.join(parent_dir, "app", "config-user.json5")))
@@ -526,7 +530,7 @@ def _gradio_run_pipeline(
         clip_seconds=float(clip_seconds) if clip_seconds else None,
         clip_start_seconds=float(clip_start_seconds or 0),
     )
-    result = gulliver.run_youtube_pipeline(params)
+    result = gulliver.run_youtube_pipeline(params, progress_callback=_gradio_progress_callback(progress))
     elapsed = time.monotonic() - started_at
     output_video_path = result.output_video[0] if isinstance(result.output_video, tuple) else result.output_video
     duration_seconds = ffmpeg_get_duration(output_video_path) if output_video_path else params.clip_seconds
@@ -542,7 +546,40 @@ def _gradio_run_pipeline(
     status += f"\n\n实际耗时：{_format_elapsed(elapsed)}"
     status += "\n消耗说明：当前链路不使用 OpenAI token；翻译按字幕字符/请求消耗，TTS/唇形主要消耗本机 CPU/GPU。"
     input_video, input_audio, transcription, output_video, output_audio, translation, files, _ = result.as_gradio_outputs()
-    return input_video, input_audio, transcription, output_video, output_audio, translation, files, status, estimate.markdown
+    return (
+        input_video,
+        input_audio,
+        transcription,
+        output_video,
+        output_audio,
+        translation,
+        files,
+        status,
+        result.quality_report_markdown,
+        estimate.markdown,
+    )
+
+
+def _gradio_progress_callback(progress):
+    def _callback(event):
+        stage = event.get("stage", {})
+        key = stage.get("key")
+        status = stage.get("status", "")
+        label = stage.get("label", key or "Pipeline")
+        try:
+            index = PIPELINE_STAGE_KEYS.index(key)
+            if status == "running":
+                value = index / len(PIPELINE_STAGE_KEYS)
+            else:
+                value = (index + 1) / len(PIPELINE_STAGE_KEYS)
+        except ValueError:
+            value = None
+        if value is None:
+            progress(0, desc=f"{label}: {status}")
+        else:
+            progress(value, desc=f"{label}: {status}")
+
+    return _callback
 
 
 def _format_elapsed(seconds):

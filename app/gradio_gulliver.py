@@ -1,6 +1,8 @@
 
 import json
 import asyncio
+import os
+import time
 
 from src.config import UserConfig
 from app.abus_downloader import *
@@ -30,7 +32,13 @@ from app.abus_tts_cosyvoice import *
 from app.abus_tts_kokoro import *
 from app.abus_hf import AbusHuggingFace
 from app.abus_lipsync import LipSyncRunner
-from app.abus_pipeline import YoutubePipelineParams, YoutubePipelineResult
+from app.abus_pipeline import (
+    PipelineProgressTracker,
+    YoutubePipelineParams,
+    YoutubePipelineResult,
+    build_youtube_quality_report,
+    save_quality_report,
+)
 
 
 import src.ui as ui
@@ -60,6 +68,9 @@ class GradioGulliver:
         self.translator = AzureTranslator() if azure_text_api_working() == True else DeepTranslator()
         self.lipsync = LipSyncRunner(self.user_config)
         self.last_lipsync_status = ""
+        self.last_lipsync_result = None
+        self.last_edge_tts_fallback = False
+        self._pipeline_progress_tracker = None
         
         asr_engine = self.user_config.get("asr_engine", 'faster-whisper')
         self.whisper_inf = self.switch_case(asr_engine)   
@@ -68,6 +79,79 @@ class GradioGulliver:
         # self.mdxnet_models_dir = os.path.join(os.getcwd(), 'model', 'mdxnet-model')
         # with open(os.path.join(self.mdxnet_models_dir, 'model_data.json')) as infile:
         #     self.mdx_model_params = json.load(infile)
+
+    def _tracker(self):
+        return getattr(self, "_pipeline_progress_tracker", None)
+
+    def _media_path(self, value):
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                path = self._media_path(item)
+                if path:
+                    return path
+            return None
+        if value and isinstance(value, str):
+            return value
+        return None
+
+    def _media_duration(self, value):
+        path = self._media_path(value)
+        if path and os.path.exists(path):
+            return ffmpeg_get_duration(path)
+        return None
+
+    def _quality_report_paths(self):
+        report_dir = os.path.join(path_workspace_folder(), "reports")
+        os.makedirs(report_dir, exist_ok=True)
+        base_name = f"{path_time_string('%Y%m%d-%H%M%S-%f')}-youtube-quality"
+        return (
+            os.path.join(report_dir, f"{base_name}.json"),
+            os.path.join(report_dir, f"{base_name}.md"),
+        )
+
+    def _build_and_save_quality_report(
+        self,
+        *,
+        params,
+        tracker,
+        processing_elapsed_seconds,
+        transcription_text,
+        input_video,
+        output_video,
+        output_audio,
+        output_files,
+        ok,
+        error="",
+    ):
+        lipsync_result = self.last_lipsync_result
+        strategy = str(params.tts_strategy or "source_voice").replace("-", "_")
+        used_source_voice = strategy == "source_voice" and not self.last_edge_tts_fallback
+        real_wav2lip_executed = bool(
+            lipsync_result
+            and lipsync_result.engine == LipSyncRunner.ENGINE_WAV2LIP
+            and not lipsync_result.used_fallback
+        )
+        audio_only_fallback_used = bool(lipsync_result and lipsync_result.used_fallback)
+        json_path, markdown_path = self._quality_report_paths()
+        if tracker.status_of("export") in ("running", "completed"):
+            tracker.add_artifacts("export", [markdown_path, json_path], notify=False)
+        report = build_youtube_quality_report(
+            youtube_url=params.youtube_url,
+            ok=ok,
+            error=error,
+            stages=tracker.snapshot(),
+            source_video_duration_seconds=self._media_duration(input_video or self.fm.get_split("Source.video")),
+            output_video_duration_seconds=self._media_duration(output_video),
+            processing_elapsed_seconds=processing_elapsed_seconds,
+            subtitle_text=transcription_text,
+            target_audio_duration_seconds=self._media_duration(output_audio),
+            used_source_voice=used_source_voice,
+            edge_fallback_occurred=self.last_edge_tts_fallback,
+            real_wav2lip_executed=real_wav2lip_executed,
+            audio_only_fallback_used=audio_only_fallback_used,
+            output_files=list(output_files or []) + [markdown_path, json_path],
+        )
+        return save_quality_report(report, json_path, markdown_path)
 
     def switch_case(self, case):
         switch_dict = {
@@ -236,76 +320,163 @@ class GradioGulliver:
             )
             return result.as_gradio_outputs()
 
-    def run_youtube_pipeline(self, params: YoutubePipelineParams) -> YoutubePipelineResult:
-        status = []
+    def run_youtube_pipeline(self, params: YoutubePipelineParams, progress_callback=None) -> YoutubePipelineResult:
+        started_at = time.monotonic()
+        tracker = PipelineProgressTracker(progress_callback)
+        self._pipeline_progress_tracker = tracker
         self.last_lipsync_status = ""
+        self.last_lipsync_result = None
+        self.last_edge_tts_fallback = False
+        input_video = None
+        input_audio = None
+        transcription_text = ""
+        translation_text = ""
+        dubbing_video = None
+        dubbing_audio = None
+        files = None
 
-        if not params.youtube_url or not params.youtube_url.strip():
-            raise ValueError("YouTube URL is required for the full pipeline.")
+        try:
+            if not params.youtube_url or not params.youtube_url.strip():
+                raise ValueError("YouTube URL is required for the full pipeline.")
 
-        self.lipsync.preflight(
-            params.lip_sync_engine,
-            enabled=params.lip_sync_enabled,
-            allow_audio_only_fallback=params.lip_sync_allow_fallback,
-        )
+            try:
+                self.lipsync.preflight(
+                    params.lip_sync_engine,
+                    enabled=params.lip_sync_enabled,
+                    allow_audio_only_fallback=params.lip_sync_allow_fallback,
+                )
+            except Exception as e:
+                tracker.fail("lipsync", e)
+                raise
 
-        input_video, input_audio, _ = self.gradio_upload_source(
-            None, None, params.youtube_url, params.video_quality, params.audio_format, params.clip_seconds, params.clip_start_seconds
-        )
-        if not input_audio and not self.fm.get_split("Source.audio"):
-            raise RuntimeError("Source media download or audio extraction failed.")
-        status.append("1/5 Downloaded source media.")
+            tracker.start("download", f"Downloading source media at quality={params.video_quality}.")
+            input_video, input_audio, download_files = self.gradio_upload_source(
+                None, None, params.youtube_url, params.video_quality, params.audio_format, params.clip_seconds, params.clip_start_seconds
+            )
+            if not input_audio and not self.fm.get_split("Source.audio"):
+                raise RuntimeError("Source media download or audio extraction failed.")
+            tracker.complete(
+                "download",
+                "Source media downloaded and audio extracted.",
+                [input_video or self.fm.get_split("Source.video"), input_audio or self.fm.get_split("Source.audio"), download_files],
+            )
 
-        if params.bootstrap_assets:
-            self._bootstrap_pipeline_assets(params.tts_strategy)
+            if params.bootstrap_assets:
+                self._bootstrap_pipeline_assets(params.tts_strategy)
 
-        input_video, input_audio, transcription_text, _ = self.gradio_whisper(
-            params.asr_engine,
-            params.asr_model,
-            params.media_language,
-            params.compute_type,
-            params.denoise_level,
-        )
-        if not transcription_text:
-            raise RuntimeError("Transcription did not produce subtitles or text.")
-        status.append("2/5 Transcribed source speech.")
+            tracker.start("asr", f"{params.asr_engine} / {params.asr_model} / {params.media_language}")
+            input_video, input_audio, transcription_text, transcription_files = self.gradio_whisper(
+                params.asr_engine,
+                params.asr_model,
+                params.media_language,
+                params.compute_type,
+                params.denoise_level,
+            )
+            if not transcription_text:
+                raise RuntimeError("Transcription did not produce subtitles or text.")
+            tracker.complete("asr", "Source speech transcribed.", [input_video, input_audio, self.fm.get_subtitle(".srt"), transcription_files])
 
-        _, _, translation_text, _ = self.gradio_translate(
-            params.source_language,
-            transcription_text,
-            params.target_language,
-        )
-        if not translation_text:
-            raise RuntimeError("Translation did not produce output text.")
-        status.append(f"3/5 Translated subtitles: {params.source_language} -> {params.target_language}.")
+            tracker.start("translate", f"{params.source_language} -> {params.target_language}")
+            _, _, translation_text, translation_files = self.gradio_translate(
+                params.source_language,
+                transcription_text,
+                params.target_language,
+            )
+            if not translation_text:
+                raise RuntimeError("Translation did not produce output text.")
+            tracker.complete("translate", "Subtitles translated.", [self.fm.get_all_translations(), translation_files])
 
-        selected_voice = self._voice_for_target_language(params.target_language, params.voice_name)
-        dubbing_video, dubbing_audio, files, tts_label = self._run_pipeline_dubbing(
-            params,
-            translation_text,
-            selected_voice,
-        )
-        if not dubbing_audio:
-            raise RuntimeError("Target speech synthesis did not produce audio.")
-        if self.fm.get_split("Source.video") and not dubbing_video:
-            raise RuntimeError("Dubbed video generation did not produce a video file.")
-        status.append(f"4/5 Synthesized target speech with {tts_label}.")
+            selected_voice = self._voice_for_target_language(params.target_language, params.voice_name)
+            dubbing_video, dubbing_audio, files, tts_label = self._run_pipeline_dubbing(
+                params,
+                translation_text,
+                selected_voice,
+            )
+            if not dubbing_audio:
+                if tracker.status_of("tts") == "pending":
+                    tracker.fail("tts", "Target speech synthesis did not produce audio.")
+                raise RuntimeError("Target speech synthesis did not produce audio.")
+            if self.fm.get_split("Source.video") and not dubbing_video:
+                if tracker.status_of("mix") == "pending":
+                    tracker.fail("mix", "Dubbed video generation did not produce a video file.")
+                raise RuntimeError("Dubbed video generation did not produce a video file.")
+            if tracker.status_of("tts") == "pending":
+                tracker.complete("tts", f"Target speech synthesized with {tts_label}.", [dubbing_audio])
+            if tracker.status_of("mix") == "pending":
+                tracker.complete("mix", "Dubbed audio mixed into source media.", [dubbing_video, dubbing_audio])
 
-        if self.last_lipsync_status:
-            status.append(f"5/5 {self.last_lipsync_status}")
-        else:
-            status.append("5/5 Final dubbed video generated.")
+            if params.lip_sync_enabled:
+                if tracker.status_of("lipsync") == "pending":
+                    tracker.skip("lipsync", "Lip sync did not run because no source video/audio pair was available.")
+            else:
+                tracker.skip("lipsync", "Lip sync disabled.")
 
-        return YoutubePipelineResult(
-            input_video=input_video or self.fm.get_split("Source.video"),
-            input_audio=input_audio or self.fm.get_split("Source.audio"),
-            transcription_text=transcription_text,
-            output_video=dubbing_video,
-            output_audio=dubbing_audio,
-            translation_text=translation_text,
-            files=self.fm.get_all_files() if files is None else files,
-            status="\n".join(status),
-        )
+            final_files = self.fm.get_all_files() if files is None else files
+            tracker.start("export", "Collecting final video, audio, subtitles, and generated files.")
+            tracker.complete("export", "Final artifacts ready.", [dubbing_video, dubbing_audio, final_files])
+            quality_report, quality_report_markdown = self._build_and_save_quality_report(
+                params=params,
+                tracker=tracker,
+                processing_elapsed_seconds=time.monotonic() - started_at,
+                transcription_text=transcription_text,
+                input_video=input_video or self.fm.get_split("Source.video"),
+                output_video=dubbing_video,
+                output_audio=dubbing_audio,
+                output_files=final_files,
+                ok=True,
+            )
+            final_files = quality_report.get("output_files", final_files)
+
+            return YoutubePipelineResult(
+                input_video=input_video or self.fm.get_split("Source.video"),
+                input_audio=input_audio or self.fm.get_split("Source.audio"),
+                transcription_text=transcription_text,
+                output_video=dubbing_video,
+                output_audio=dubbing_audio,
+                translation_text=translation_text,
+                files=final_files,
+                status=tracker.format_status(),
+                stages=tracker.snapshot(),
+                quality_report=quality_report,
+                quality_report_markdown=quality_report_markdown,
+                quality_report_json_path=quality_report.get("report_json_path", ""),
+                quality_report_markdown_path=quality_report.get("report_markdown_path", ""),
+            )
+        except Exception as e:
+            tracker.fail_active(e)
+            final_files = self.fm.get_all_files() if files is None else files
+            quality_report, quality_report_markdown = self._build_and_save_quality_report(
+                params=params,
+                tracker=tracker,
+                processing_elapsed_seconds=time.monotonic() - started_at,
+                transcription_text=transcription_text,
+                input_video=input_video or self.fm.get_split("Source.video"),
+                output_video=dubbing_video,
+                output_audio=dubbing_audio,
+                output_files=final_files,
+                ok=False,
+                error=str(e),
+            )
+            final_files = quality_report.get("output_files", final_files)
+            return YoutubePipelineResult(
+                input_video=input_video or self.fm.get_split("Source.video"),
+                input_audio=input_audio or self.fm.get_split("Source.audio"),
+                transcription_text=transcription_text,
+                output_video=dubbing_video,
+                output_audio=dubbing_audio,
+                translation_text=translation_text,
+                files=final_files,
+                status=tracker.format_status() + f"\n\nPipeline failed: {e}",
+                stages=tracker.snapshot(),
+                quality_report=quality_report,
+                quality_report_markdown=quality_report_markdown,
+                quality_report_json_path=quality_report.get("report_json_path", ""),
+                quality_report_markdown_path=quality_report.get("report_markdown_path", ""),
+                ok=False,
+                error=str(e),
+            )
+        finally:
+            self._pipeline_progress_tracker = None
     
 
     def gradio_whisper_default(self):
@@ -486,23 +657,39 @@ class GradioGulliver:
         return current_voice
 
     def _lip_sync_video(self, mixed_audio_file, lip_sync_engine, lip_sync_bbox_shift, lip_sync_allow_fallback):
+        tracker = self._tracker()
         source_video_file = self.fm.get_split("Source.video")
         if not source_video_file or not mixed_audio_file:
             self.last_lipsync_status = "Lip sync skipped because source video or dubbed audio is missing."
+            if tracker:
+                tracker.skip("lipsync", self.last_lipsync_status, [source_video_file, mixed_audio_file])
             return None
 
         output_file = path_add_postfix(source_video_file, f"_lipsync_{lip_sync_engine.replace(' ', '_')}", ".mp4")
-        result = self.lipsync.run(
-            source_video=source_video_file,
-            audio_path=mixed_audio_file,
-            output_path=output_file,
-            engine=lip_sync_engine,
-            bbox_shift=lip_sync_bbox_shift,
-            enabled=True,
-            allow_audio_only_fallback=lip_sync_allow_fallback,
-        )
+        if tracker:
+            tracker.start("lipsync", f"{lip_sync_engine} with audio-only fallback={lip_sync_allow_fallback}.")
+        try:
+            result = self.lipsync.run(
+                source_video=source_video_file,
+                audio_path=mixed_audio_file,
+                output_path=output_file,
+                engine=lip_sync_engine,
+                bbox_shift=lip_sync_bbox_shift,
+                enabled=True,
+                allow_audio_only_fallback=lip_sync_allow_fallback,
+            )
+        except Exception as e:
+            if tracker:
+                tracker.fail("lipsync", e, [source_video_file, mixed_audio_file, output_file])
+            raise
         self.last_lipsync_status = result.message
+        self.last_lipsync_result = result
         self.fm.set_effect(f"{result.engine}.video", result.output_path)
+        if tracker:
+            message = result.message
+            if result.used_fallback:
+                message = f"{message} Fallback was used."
+            tracker.complete("lipsync", message, [result.output_path])
         return result.output_path
 
     def _run_pipeline_dubbing(self, params: YoutubePipelineParams, translation_text: str, selected_voice: str):
@@ -525,6 +712,7 @@ class GradioGulliver:
                 logger.error(f"[gradio_gulliver.py] source voice dubbing failed: {e}")
                 if not params.allow_edge_tts_fallback:
                     raise
+                self.last_edge_tts_fallback = True
                 gr.Warning(f"Source voice dubbing failed; falling back to Edge TTS: {e}")
 
         video, audio, files = self.gradio_edge_dubbing(
@@ -636,22 +824,35 @@ class GradioGulliver:
         return clipped_ref_audio_file
 
     def _source_voice_tts_subtitle(self, subtitle_file, source_voice_engine, source_voice_mode, source_voice_speed, audio_format):
+        tracker = self._tracker()
+        if tracker:
+            tracker.start("tts", f"{source_voice_engine} {source_voice_mode} from translated subtitles.")
         source_audio_file = self.fm.get_split("Source.audio")
         if not source_audio_file:
-            raise RuntimeError("Source audio is required for source voice dubbing.")
+            error = RuntimeError("Source audio is required for source voice dubbing.")
+            if tracker:
+                tracker.fail("tts", error)
+            raise error
 
-        ref_audio_file, inst_audio_file = self._source_voice_reference_and_inst_audio(source_audio_file)
-        aidub_audio_file = path_add_postfix(source_audio_file, f"_{source_voice_engine}_source_voice")
+        try:
+            ref_audio_file, inst_audio_file = self._source_voice_reference_and_inst_audio(source_audio_file)
+            aidub_audio_file = path_add_postfix(source_audio_file, f"_{source_voice_engine}_source_voice")
 
-        self._get_cosy_tts().srt_to_voice(
-            subtitle_file,
-            aidub_audio_file,
-            ref_audio_file,
-            "",
-            source_voice_mode,
-            float(source_voice_speed),
-            audio_format,
-        )
+            self._get_cosy_tts().srt_to_voice(
+                subtitle_file,
+                aidub_audio_file,
+                ref_audio_file,
+                "",
+                source_voice_mode,
+                float(source_voice_speed),
+                audio_format,
+            )
+            if tracker:
+                tracker.complete("tts", "Source-voice speech synthesized.", [subtitle_file, ref_audio_file, aidub_audio_file])
+        except Exception as e:
+            if tracker and tracker.status_of("tts") == "running":
+                tracker.fail("tts", e)
+            raise
 
         return self._mix_source_voice_dubbing(
             source_audio_file,
@@ -662,22 +863,35 @@ class GradioGulliver:
         )
 
     def _source_voice_tts_text(self, text, source_voice_engine, source_voice_mode, source_voice_speed, audio_format):
+        tracker = self._tracker()
+        if tracker:
+            tracker.start("tts", f"{source_voice_engine} {source_voice_mode} from translated text.")
         source_audio_file = self.fm.get_split("Source.audio")
         if not source_audio_file:
-            raise RuntimeError("Source audio is required for source voice dubbing.")
+            error = RuntimeError("Source audio is required for source voice dubbing.")
+            if tracker:
+                tracker.fail("tts", error)
+            raise error
 
-        ref_audio_file, inst_audio_file = self._source_voice_reference_and_inst_audio(source_audio_file)
-        aidub_audio_file = path_add_postfix(source_audio_file, f"_{source_voice_engine}_source_voice")
+        try:
+            ref_audio_file, inst_audio_file = self._source_voice_reference_and_inst_audio(source_audio_file)
+            aidub_audio_file = path_add_postfix(source_audio_file, f"_{source_voice_engine}_source_voice")
 
-        self._get_cosy_tts().text_to_voice(
-            text,
-            aidub_audio_file,
-            ref_audio_file,
-            "",
-            source_voice_mode,
-            float(source_voice_speed),
-            audio_format,
-        )
+            self._get_cosy_tts().text_to_voice(
+                text,
+                aidub_audio_file,
+                ref_audio_file,
+                "",
+                source_voice_mode,
+                float(source_voice_speed),
+                audio_format,
+            )
+            if tracker:
+                tracker.complete("tts", "Source-voice speech synthesized.", [ref_audio_file, aidub_audio_file])
+        except Exception as e:
+            if tracker and tracker.status_of("tts") == "running":
+                tracker.fail("tts", e)
+            raise
 
         return self._mix_source_voice_dubbing(
             source_audio_file,
@@ -688,22 +902,34 @@ class GradioGulliver:
         )
 
     def _mix_source_voice_dubbing(self, source_audio_file, aidub_audio_file, inst_audio_file, source_voice_engine, audio_format):
-        if not os.path.exists(aidub_audio_file):
-            raise RuntimeError(f"Source voice TTS did not produce audio: {aidub_audio_file}")
-        if not inst_audio_file or not os.path.exists(inst_audio_file):
-            inst_audio_file, _ = self._denoise(source_audio_file, 1)
+        tracker = self._tracker()
+        if tracker:
+            tracker.start("mix", "Mixing source-voice speech with instrumental audio.")
+        try:
+            if not os.path.exists(aidub_audio_file):
+                raise RuntimeError(f"Source voice TTS did not produce audio: {aidub_audio_file}")
+            if not inst_audio_file or not os.path.exists(inst_audio_file):
+                inst_audio_file, _ = self._denoise(source_audio_file, 1)
 
-        mixed_audio_file = path_add_postfix(source_audio_file, f"_mixed_{source_voice_engine}_source_voice")
-        ffmpeg_mix_audio(aidub_audio_file, inst_audio_file, mixed_audio_file, 0, 0, audio_format)
-        self.fm.set_dubbing(f'{source_voice_engine}.source_voice.audio', aidub_audio_file)
+            mixed_audio_file = path_add_postfix(source_audio_file, f"_mixed_{source_voice_engine}_source_voice")
+            ffmpeg_mix_audio(aidub_audio_file, inst_audio_file, mixed_audio_file, 0, 0, audio_format)
+            self.fm.set_dubbing(f'{source_voice_engine}.source_voice.audio', aidub_audio_file)
 
-        if self.has_video:
-            source_video_file = self.fm.get_split("Source.video")
-            aidub_video_file = path_add_postfix(source_video_file, f"_{source_voice_engine}_source_voice")
-            ffmpeg_replace_audio(source_video_file, mixed_audio_file, aidub_video_file)
-            self.fm.set_dubbing(f'{source_voice_engine}.source_voice.video', aidub_video_file)
-            return aidub_video_file, mixed_audio_file
-        return None, mixed_audio_file
+            if self.has_video:
+                source_video_file = self.fm.get_split("Source.video")
+                aidub_video_file = path_add_postfix(source_video_file, f"_{source_voice_engine}_source_voice")
+                ffmpeg_replace_audio(source_video_file, mixed_audio_file, aidub_video_file)
+                self.fm.set_dubbing(f'{source_voice_engine}.source_voice.video', aidub_video_file)
+                if tracker:
+                    tracker.complete("mix", "Dubbed audio mixed into source video.", [aidub_audio_file, inst_audio_file, mixed_audio_file, aidub_video_file])
+                return aidub_video_file, mixed_audio_file
+            if tracker:
+                tracker.complete("mix", "Dubbed audio mixed.", [aidub_audio_file, inst_audio_file, mixed_audio_file])
+            return None, mixed_audio_file
+        except Exception as e:
+            if tracker and tracker.status_of("mix") == "running":
+                tracker.fail("mix", e, [aidub_audio_file, inst_audio_file])
+            raise
 
 
            

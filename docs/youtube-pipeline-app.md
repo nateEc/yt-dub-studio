@@ -36,6 +36,32 @@ installer_files/env/bin/python start-youtube-pipeline.py
 
 按当前机器实测，5 分钟视频使用源音色 + Wav2Lip 大约需要 50-60 分钟。不同 ASR 模型、视频时长、是否启用 GPU、是否启用唇形同步都会显著影响耗时。
 
+## 运行进度
+
+长任务会按阶段记录和展示进度：
+
+1. 下载源视频
+2. ASR 转写
+3. 翻译字幕
+4. 源音色 TTS
+5. 混音
+6. Wav2Lip
+7. 导出
+
+Web UI 会在运行时更新 Gradio 进度条，完成后在运行状态里展示每个阶段的开始时间、结束时间、耗时、产物路径和错误原因。
+
+CLI 会把阶段事件以 JSON Lines 写到 `stderr`，最终结果 JSON 写到 `stdout`。最终 JSON 中的 `stages` 字段包含完整阶段记录，适合脚本或自动化系统读取。
+
+## 质量报告
+
+每次运行都会生成一份质量报告 summary，并在 Web UI 的 `质量报告` tab 展示，同时保存到：
+
+```text
+workspace/reports/
+```
+
+报告会同时写出 Markdown 和 JSON，内容包括视频时长、处理耗时、字幕段数、目标音频总时长、音视频时长差、是否使用 source voice、是否发生 Edge fallback、是否真实执行 Wav2Lip、是否 fallback 成换轨视频，以及输出文件列表。CLI 最终 JSON 也会包含同样的 `quality_report` 字段。
+
 ## Wav2Lip 注意事项
 
 项目的 Wav2Lip setup patch 会启用两项适合屏幕录制/讲解视频的行为：
