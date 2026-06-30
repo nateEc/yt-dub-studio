@@ -18,9 +18,11 @@ Language: [中文](../README.md) | English
 
 This sample shows the full workflow in action: the first five minutes of an English YouTube video → Chinese source-voice dubbing → Wav2Lip lip sync → final rendered video.
 
-[![Five-minute Chinese dubbing demo preview](demo/wtf-loop-engineer-preview.gif)](demo/wtf-loop-engineer-first5-sourcevoice-wav2lip.mp4)
+[![Five-minute Chinese dubbing demo preview](demo/wtf-loop-engineer-preview.gif)](https://github.com/nateEc/yt-dub-studio/releases/download/demo-v1/wtf-loop-engineer-first5-sourcevoice-wav2lip.mp4)
 
-GitHub README files strip repo-hosted `<video>` tags; click the preview above to open the full five-minute MP4 demo with audio.
+Click the preview above to open the full five-minute MP4 demo with audio. The full video is hosted as a GitHub Release asset, while the current checkout/source archive keeps only the lightweight GIF preview.
+
+Demo distribution notes: [Demo Assets](demo-assets.md).
 
 ## Why This Exists
 
